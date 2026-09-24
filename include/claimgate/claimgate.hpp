@@ -51,8 +51,11 @@ inline constexpr std::size_t kMaxReportedExceeded = 5;
 //                   where the bound is at least the reference's own magnitude -
 //                   the pass is the number format's floor, not the library's,
 //                   so it is counted apart from the verified rows;
-//   EvidenceAbsent  this revision cannot measure the row. Counted apart again,
-//                   and never as a pass.
+//   EvidenceAbsent  this revision cannot measure the row: either the consumer
+//                   said so, or no cell was ever measured against it. Counted
+//                   apart again, and never as a pass - a claim that reads as met
+//                   with nothing measured under it is the failure this framework
+//                   exists to catch.
 enum class Verdict { Verified, MetOverDomain, Exceeded, Vacuous, EvidenceAbsent };
 
 // A claim the document itself scopes - to a region, a set of indices, a range
@@ -102,12 +105,18 @@ enum class PropertyType {
     // the number format's floor rather than on its arithmetic; blind to a
     // representable value that is simply wrong.
     ErrorFloor,
+    // None of the above: the consumer has not said what this row is a claim
+    // about. It detects nothing on its own account, and it is the honest record
+    // of a row measured without anyone deciding which defect class the cells
+    // could refute - a row classified as something it is not would overstate
+    // what it sees, which is the failure this framework exists to catch.
+    Unclassified,
 };
 
 // The number of PropertyType members, for a tally over all of them. The members
 // are dense from zero and in the order declared, so a type's value indexes an
 // array of that many tallies.
-inline constexpr std::size_t kPropertyTypeCount = 6;
+inline constexpr std::size_t kPropertyTypeCount = 7;
 
 // The property type as the report prints it.
 const char* PropertyTypeName(PropertyType type) noexcept;
@@ -151,7 +160,7 @@ struct ExceededCell {
 struct Row {
     std::string  lane;            // the implementation lane or mode
     std::string  region;          // the region of the domain the bound is over
-    PropertyType property = PropertyType::Accuracy; // what the row claims to know about
+    PropertyType property = PropertyType::Unclassified; // what the row claims to know about
     double      bound = 0.0;      // the base bound the row was registered with
     bool        judged = true;    // whether any report verdict rests on it
     std::string domain;           // the stated domain, when the claim is scoped
@@ -185,12 +194,15 @@ struct Row {
     std::vector<ExceededCell> exceeded;
 };
 
-// The verdict a measured row earns, from its counters alone.
+// The verdict a measured row earns, from its counters alone. A row carrying no
+// cell at all is EvidenceAbsent rather than Verified: nothing was measured under
+// it, so no reading of it is a pass.
 Verdict FromAccum(const Row& row) noexcept;
 
 // The verdict a claim covering several measured rows earns: exceeded if any row
 // failed, else verified if any row was, else vacuous only if any row was, else
-// evidence absent - no row carried a cell.
+// evidence absent - no row carried a cell. An unmeasured row arrives here as
+// EvidenceAbsent and so cannot carry an aggregate to verified on its own.
 Verdict CombineVerdicts(std::initializer_list<Verdict> verdicts) noexcept;
 
 // The verdict a row is reported with: FromAccum, and a row the consumer scoped

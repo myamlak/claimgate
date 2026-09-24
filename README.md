@@ -79,6 +79,7 @@ registration:
 | `Continuity` | a threshold that jumps, a series truncated before its remainder is small, an undocumented dispatch boundary; cannot see a value that is smooth and wrong |
 | `Reproducibility` | two paths to the same value that disagree - non-determinism, a reassociation, a vector path that parts company with the scalar one; cannot see a value wrong identically on both paths |
 | `ErrorFloor` | a lane that returns zero or a subnormal where the answer is representable, passing on the number format's floor; cannot see a representable value that is simply wrong |
+| `Unclassified` | nothing on its own account: the consumer has not said what the row is a claim about. It exists so that a row fitting none of the others can be registered honestly instead of being filed under a type it does not reach - a row that overstates what it can see is the failure this framework exists to catch |
 
 The type is the record of which defect classes a book can reach. It does not
 change a cell's arithmetic or a row's verdict: it is what the report counts
@@ -93,11 +94,18 @@ Each judged row ends with one **verdict**:
 | `MetOverDomain` | met over the domain the claim itself states |
 | `Exceeded` | measured here, and the delivered error is outside the bound |
 | `Vacuous` | every counted cell is one where the bound is at least the reference's own magnitude - the pass is the number format's floor, not the library's |
-| `EvidenceAbsent` | this revision cannot measure the row |
+| `EvidenceAbsent` | this revision cannot measure the row: the consumer said so, or no cell was ever measured against it |
 
 `Verified` and `MetOverDomain` are the two that count as met. A row registered
 with `judged = false` is a **record**: its cells are counted, but no verdict
 rests on it, so it can be over its bound and still leave the book green.
+
+A judged row with **no measured cells** is `EvidenceAbsent`, not `Verified`, and
+a stated domain does not rescue it: a claim that reads as met with nothing
+measured under it is the one outcome the whole framework exists to catch, so the
+book it sits in is not met and the row is named in the failure line. A consumer
+that knows in advance that a revision cannot measure a row says so with
+`SetEvidenceAbsent`, which reports the same verdict.
 
 ## Worked example
 
@@ -181,6 +189,7 @@ reaches
   continuity                    0        0        0         0           0  0 (0.0%)
   reproducibility               0        0        0         0           0  0 (0.0%)
   error floor                   0        0        0         0           0  0 (0.0%)
+  unclassified                  0        0        0         0           0  0 (0.0%)
   a type with no rows is a defect class nothing in this book asks about,
   and a type whose cells cannot discriminate can only see a return out of
   range: the counts are what each kind of row saw, not what there was to see
@@ -191,9 +200,9 @@ That claim is met, and 31 of its 101 cells could not have failed: past
 `x = 13.8` the value is below 1e-6, so the bound is larger than the value and
 every cell there passes whatever the lane returns. The verdict rests on 70
 cells, and the report says so in the same breath. The last block is the other
-half of the same reading: this book asked one kind of question, so four of the
-six defect classes are types with no rows, and nothing measured here says
-anything about them.
+half of the same reading: this book asked one kind of question, so five of the
+seven types have no rows under them, and nothing measured here says anything
+about the defect classes they stand for.
 
 `examples/toy_accuracy.cpp` is a longer run: four judged claims, one of them
 scoped to a stated domain, a lane swept past the point where its format can hold
@@ -222,7 +231,9 @@ library means supplying eight things.
    cells can see, and it is the only record of that: choose the type the check
    actually reaches for, not the one that sounds like the claim. A book of
    `Accuracy` rows says nothing about non-determinism however green it is, and
-   the report shows that as types with no rows.
+   the report shows that as types with no rows. If none of the types fits, say
+   so with `Unclassified` rather than filing the row under a type it does not
+   reach.
 6. **The index variable** - the thing each cell is keyed by (order, mode, term
    count, tier). The `Book` is constructed with its maximum, and a cell whose
    index is outside that range is rejected instead of written past the end of
@@ -264,6 +275,15 @@ row carried a cell at all.
 use: 0 when every judged claim is met, 1 otherwise. `Book::BuildReport()`
 returns the same numbers as a `Report` value, for a caller that wants to act on
 them rather than print them.
+
+## Known limitations
+
+- **The per-lane table has no property-type column.** Rows are keyed there by
+  lane and region alone, so two rows registered under the same lane and region
+  but different property types print identical lines in that table; the verdict
+  list under it and the rows-by-property-type block are what separate them.
+  Nothing stops a consumer from registering such a pair, so a consumer that does
+  should give them distinguishable region names.
 
 ## Layout
 

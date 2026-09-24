@@ -169,25 +169,118 @@ TEST(FromAccumFollowsFailuresThenVacuousOnlyThenVerified) {
     CHECK_EQ(claimgate::FromAccum(row), Verdict::Exceeded);
 }
 
-TEST(AnUnmeasuredRowIsVerifiedByTheCounterRuleAndNotByEvidence) {
-    // Preserved from the source rule, and the one place it is surprising: a row
-    // with no cells at all satisfies the vacuous-only test's guard (points > 0)
-    // and falls through to Verified. A consumer that registers a row this
-    // revision cannot measure must say so with SetEvidenceAbsent; the counter
-    // rule alone will not.
+TEST(AnUnmeasuredRowIsEvidenceAbsentAndNotMet) {
+    // A row with no cells at all is evidence absent, not verified: no
+    // measurement stands under it, so no reading of it is a pass. This is the
+    // one verdict the framework exists to keep reachable - a claim that reads as
+    // met while nothing was measured under it.
     Row row;
     CHECK_EQ(row.points, 0u);
-    CHECK_EQ(claimgate::FromAccum(row), Verdict::Verified);
+    CHECK_EQ(claimgate::FromAccum(row), Verdict::EvidenceAbsent);
+    CHECK(!claimgate::IsMet(claimgate::FromAccum(row)));
 
     Book book(0);
     const Claim c = book.AddClaim(PropertyType::Accuracy, "lane", "region", 1e-9);
-    CHECK_EQ(claimgate::FromAccum(book.Rows()[0]), Verdict::Verified);
-    CHECK_EQ(Build(book).verified, 1);
-
-    book.SetEvidenceAbsent(c);
-    CHECK_EQ(Build(book).verified, 0);
-    CHECK_EQ(Build(book).absent, 1);
+    CHECK_EQ(claimgate::FromAccum(book.Rows()[0]), Verdict::EvidenceAbsent);
     CHECK_EQ(claimgate::ReportedVerdict(book.Rows()[0]), Verdict::EvidenceAbsent);
+
+    // An unmeasured row is not a met claim, so a book holding one is not met:
+    // it cannot pass while containing a claim nobody tested.
+    const Report rep = Build(book);
+    CHECK_EQ(rep.verified, 0);
+    CHECK_EQ(rep.absent, 1);
+    CHECK_EQ(rep.claims, 1);
+    CHECK_EQ(rep.met, 0);
+    CHECK(!rep.AllMet());
+    CHECK_EQ(PrintStatus(book), 1);
+
+    const std::string text = Print(book);
+    CHECK(Contains(text, "[evidence absent from the tree] lane / region"));
+    CHECK(Contains(text, "no cell was measured for this row"));
+    CHECK(Contains(text, "0 of 1 claims met at this revision"));
+    CHECK(Contains(text, "1 evidence absent"));
+    CHECK(Contains(text, "NOT MET at this revision: lane/region"));
+    CHECK(Contains(text, "FAIL (exit status 1)"));
+
+    // The consumer can still say so in advance, and it reads the same either
+    // way: the flag and the counter rule agree.
+    book.SetEvidenceAbsent(c);
+    CHECK_EQ(Build(book).absent, 1);
+    CHECK_EQ(PrintStatus(book), 1);
+}
+
+TEST(AStatedDomainDoesNotRescueAnUnmeasuredRow) {
+    // The domain reading turns a verified row into "met over that domain". A row
+    // nobody measured is not verified, so the stated domain cannot carry it.
+    Book book(0);
+    const Claim c = book.AddClaim(PropertyType::Accuracy, "lane", "region", 1e-6);
+    book.SetDomain(c, "the arguments where the reference exceeds its bound");
+
+    CHECK_EQ(claimgate::ReportedVerdict(book.Rows()[0]), Verdict::EvidenceAbsent);
+    CHECK_EQ(Build(book).metOverDomain, 0);
+    CHECK(!Build(book).AllMet());
+    CHECK_EQ(PrintStatus(book), 1);
+
+    // And it becomes met over the domain only once something is measured.
+    book.Measure(c, Make(0, 1.0, 1.0, 1.0), book.Bound(c));
+    CHECK_EQ(claimgate::ReportedVerdict(book.Rows()[0]), Verdict::MetOverDomain);
+    CHECK(Build(book).AllMet());
+    CHECK_EQ(PrintStatus(book), 0);
+}
+
+TEST(AMeasuredRowAndAnUnmeasuredRowAreSeparatedByTheReport) {
+    // One book, two judged rows of the same type: one measured and clean, one
+    // never measured. The report must separate them rather than reading the
+    // unmeasured one as a pass, and the book must not be met.
+    Book book(0);
+    const Claim measured = book.AddClaim(PropertyType::Accuracy, "measured", "region", 1e-6);
+    const Claim untested = book.AddClaim(PropertyType::Accuracy, "untested", "region", 1e-6);
+
+    book.Measure(measured, Make(0, 1.0, 1.0, 1.0), book.Bound(measured));
+    CHECK_EQ(book.Property(untested), PropertyType::Accuracy);
+    CHECK(untested.Valid());
+
+    const Report rep = Build(book);
+    CHECK_EQ(rep.claims, 2);
+    CHECK_EQ(rep.verified, 1);
+    CHECK_EQ(rep.met, 1);
+    CHECK_EQ(rep.absent, 1);
+    CHECK(!rep.AllMet());
+    CHECK_EQ(PrintStatus(book), 1);
+
+    // The measured row is met and the unmeasured one is named as the one that
+    // holds the book back - and only it.
+    CHECK(Contains(Print(book), "NOT MET at this revision: untested/region"));
+    CHECK(!Contains(Print(book), "NOT MET at this revision: measured/region"));
+    CHECK(Contains(Print(book), "[verified at this revision] measured / region - accuracy bound"));
+    CHECK(Contains(Print(book), "[evidence absent from the tree] untested / region - accuracy bound"));
+}
+
+TEST(TheUnclassifiedRowsAreCountedApartFromTheClassifiedOnes) {
+    // A row registered without a classification detects nothing by its own
+    // account, and the report has to say so rather than let a book look
+    // classified. The tally is keyed by type like any other.
+    Row row;
+    CHECK_EQ(row.property, PropertyType::Unclassified);
+
+    Book book(0);
+    const Claim typed = book.AddClaim(PropertyType::Accuracy, "typed", "region", 1e-6);
+    const Claim untyped = book.AddClaim(PropertyType::Unclassified, "untyped", "region", 1e-6);
+
+    book.Measure(typed, Make(0, 1.0, 1.0, 1.0), book.Bound(typed));
+    book.Measure(untyped, Make(0, 1.0, 1.0, 1.0), book.Bound(untyped));
+
+    CHECK_EQ(book.Property(untyped), PropertyType::Unclassified);
+    CHECK_EQ(Tally(Build(book), PropertyType::Accuracy).claims, 1);
+    CHECK_EQ(Tally(Build(book), PropertyType::Unclassified).claims, 1);
+    CHECK_EQ(Tally(Build(book), PropertyType::Unclassified).cells, 1u);
+
+    // Both rows are met here - the difference is what the report says each of
+    // them saw, which is what a reader has to act on.
+    CHECK(Build(book).AllMet());
+    CHECK(Contains(Print(book), "\n  unclassified"));
+    CHECK(Contains(Print(book), "untyped / region - unclassified"));
+    CHECK(Contains(Print(book), "typed / region - accuracy bound"));
 }
 
 TEST(CombineVerdictsFollowsTheGroupingRule) {
@@ -686,7 +779,12 @@ TEST(ABookWithNoCellsPrintsNoFraction) {
 
     const std::string text = Print(book);
     CHECK(!Contains(text, "carried by the"));
-    CHECK(Contains(text, "RESULT: 1 of 1 claims met at this revision"));
+    CHECK(Contains(text, "RESULT: 0 of 1 claims met at this revision"));
+
+    // Nothing was measured, so the row is evidence absent and the book is not
+    // met: a book cannot pass on a claim no cell stands under.
+    CHECK(!rep.AllMet());
+    CHECK_EQ(PrintStatus(book), 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -799,7 +897,7 @@ TEST(TheReportSeparatesRowsByPropertyType) {
     //   ErrorFloor unjudged, one cell whose bound is 1e-30 against a reference of
     //              1e-32, so the cell cannot discriminate  -> a record
     //
-    // and three of the six types have no rows at all.
+    // and four of the seven types have no rows at all.
     Book book(1);
     const Claim acc = book.AddClaim(PropertyType::Accuracy, "fp64", "region", 1e-6);
     const Claim ord = book.AddClaim(PropertyType::Ordering, "fp64", "region", 1e-6);
@@ -843,10 +941,11 @@ TEST(TheReportSeparatesRowsByPropertyType) {
     CHECK(Close(Tally(rep, PropertyType::ErrorFloor).discriminatingFraction, 0.0));
 
     // A type no row was registered under is a zero row, not an absent one: the
-    // three types nothing was asked about are the ones this book cannot see.
+    // types nothing was asked about are the ones this book cannot see.
     for (const PropertyType type : {PropertyType::DomainOfValidity,
                                     PropertyType::Continuity,
-                                    PropertyType::Reproducibility}) {
+                                    PropertyType::Reproducibility,
+                                    PropertyType::Unclassified}) {
         CHECK_EQ(Tally(rep, type).claims, 0);
         CHECK_EQ(Tally(rep, type).records, 0);
         CHECK_EQ(Tally(rep, type).cells, 0u);
@@ -864,13 +963,14 @@ TEST(TheReportSeparatesRowsByPropertyType) {
     CHECK(Contains(text, "fp64 / region - ordering"));
     CHECK(Contains(text, "fp32 / region - error floor"));
 
-    // All six types print, whether or not a row was registered under them.
+    // Every type prints, whether or not a row was registered under it.
     for (const PropertyType type : {PropertyType::Accuracy,
                                     PropertyType::DomainOfValidity,
                                     PropertyType::Ordering,
                                     PropertyType::Continuity,
                                     PropertyType::Reproducibility,
-                                    PropertyType::ErrorFloor}) {
+                                    PropertyType::ErrorFloor,
+                                    PropertyType::Unclassified}) {
         CHECK(Contains(text, std::string("\n  ") + claimgate::PropertyTypeName(type)));
     }
 
@@ -887,9 +987,15 @@ TEST(TheReportSeparatesRowsByPropertyType) {
 
 TEST(RowsPrintInRegistrationOrder) {
     Book book(0);
-    book.AddClaim(PropertyType::Accuracy, "one", "region", 1e-6);
-    book.AddClaim(PropertyType::Accuracy, "two", "region", 1e-6);
-    book.AddClaim(PropertyType::Accuracy, "three", "region", 1e-6);
+    const Claim one = book.AddClaim(PropertyType::Accuracy, "one", "region", 1e-6);
+    const Claim two = book.AddClaim(PropertyType::Accuracy, "two", "region", 1e-6);
+    const Claim three = book.AddClaim(PropertyType::Accuracy, "three", "region", 1e-6);
+
+    // Each row needs a cell, or it is evidence absent and the book is not met;
+    // this test is about the printing order, so the book is kept green.
+    book.Measure(one, Make(0, 1.0, 1.0, 1.0), book.Bound(one));
+    book.Measure(two, Make(0, 1.0, 1.0, 1.0), book.Bound(two));
+    book.Measure(three, Make(0, 1.0, 1.0, 1.0), book.Bound(three));
 
     const std::string text = Print(book);
     const std::size_t first = text.find("one / region");

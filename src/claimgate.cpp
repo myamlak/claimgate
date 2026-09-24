@@ -149,6 +149,8 @@ const char* PropertyTypeName(PropertyType type) noexcept {
         return "reproducibility";
     case PropertyType::ErrorFloor:
         return "error floor";
+    case PropertyType::Unclassified:
+        return "unclassified";
     }
 
     return "?";
@@ -159,7 +161,14 @@ Verdict FromAccum(const Row& row) noexcept {
         return Verdict::Exceeded;
     }
 
-    if (row.points > 0 && row.points == row.vacuous) {
+    // No cell was measured against this row, so there is nothing for a verdict
+    // to rest on. Reading it as verified would report a claim as met with no
+    // measurement under it - the one outcome this framework exists to catch.
+    if (row.points == 0) {
+        return Verdict::EvidenceAbsent;
+    }
+
+    if (row.points == row.vacuous) {
         return Verdict::Vacuous;
     }
 
@@ -167,6 +176,9 @@ Verdict FromAccum(const Row& row) noexcept {
 }
 
 Verdict CombineVerdicts(std::initializer_list<Verdict> verdicts) noexcept {
+    // An unmeasured row reaches here as EvidenceAbsent, which is neither
+    // exceeded, verified nor vacuous, so the rule below already reports evidence
+    // absent when that is all the rows are: the two paths agree by construction.
     bool anyExceeded = false;
     bool anyVerified = false;
     bool anyVacuous = false;
@@ -191,6 +203,8 @@ Verdict ReportedVerdict(const Row& row) noexcept {
 
     const Verdict v = FromAccum(row);
 
+    // A row with no cells is evidence absent and cannot take the domain reading:
+    // a claim nobody measured is not met over any domain.
     if (v == Verdict::Verified && !row.domain.empty()) {
         return Verdict::MetOverDomain;
     }
